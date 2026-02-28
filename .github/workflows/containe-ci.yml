@@ -7,7 +7,7 @@ on:
     branches: ["**"]
 
 env:
-  IMAGE_NAME: ${{ github.repository }}
+  IMAGE_NAME: selfproxy
   IMAGE_TAG: ${{ github.sha }}
 
 jobs:
@@ -23,22 +23,11 @@ jobs:
         with:
           dockerfile: Dockerfile
           failure-threshold: error
-          ignore: DL3042 # ignore if you use --no-cache-dir already
-
-      - name: Upload Hadolint results
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: hadolint-report
-          path: hadolint-results.sarif
-          if-no-files-found: ignore
 
   build:
     name: Build Docker Image
     runs-on: ubuntu-latest
     needs: hadolint
-    outputs:
-      image: ${{ env.IMAGE_NAME }}:${{ env.IMAGE_TAG }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -79,7 +68,7 @@ jobs:
       - name: Load image
         run: docker load -i image.tar
 
-      - name: Run Dockle
+      - name: Install Dockle
         run: |
           VERSION=$(curl -s https://api.github.com/repos/goodwithtech/dockle/releases/latest \
             | grep '"tag_name":' | sed -E 's/.*"v([^"]+)".*/\1/')
@@ -87,17 +76,19 @@ jobs:
             "https://github.com/goodwithtech/dockle/releases/download/v${VERSION}/dockle_${VERSION}_Linux-64bit.tar.gz"
           tar -xzf dockle.tar.gz dockle
           chmod +x dockle
+          sudo mv dockle /usr/local/bin/dockle
 
-          ./dockle \
+      - name: Run Dockle
+        run: |
+          dockle \
             --ignore DKL-DI-0004 \
             --format json \
             --output dockle-report.json \
-            ${{ env.IMAGE_NAME }}:${{ env.IMAGE_TAG }} || true
-
-          # Also print to logs
-          ./dockle \
+            ${{ env.IMAGE_NAME }}:${{ env.IMAGE_TAG }}
+          dockle \
             --ignore DKL-DI-0004 \
-            ${{ env.IMAGE_NAME }}:${{ env.IMAGE_TAG }} || true
+            ${{ env.IMAGE_NAME }}:${{ env.IMAGE_TAG }}
+        continue-on-error: true
 
       - name: Upload Dockle report
         if: always()
@@ -119,7 +110,7 @@ jobs:
       - name: Load image
         run: docker load -i image.tar
 
-      - name: Run Dive
+      - name: Install Dive
         run: |
           VERSION=$(curl -s https://api.github.com/repos/wagoodman/dive/releases/latest \
             | grep '"tag_name":' | sed -E 's/.*"v([^"]+)".*/\1/')
@@ -127,11 +118,15 @@ jobs:
             "https://github.com/wagoodman/dive/releases/download/v${VERSION}/dive_${VERSION}_linux_amd64.tar.gz"
           tar -xzf dive.tar.gz dive
           chmod +x dive
+          sudo mv dive /usr/local/bin/dive
 
-          CI=true ./dive \
+      - name: Run Dive
+        run: |
+          CI=true dive \
             --ci-config .dive-ci.yml \
             ${{ env.IMAGE_NAME }}:${{ env.IMAGE_TAG }} \
-            2>&1 | tee dive-report.txt || true
+            2>&1 | tee dive-report.txt
+        continue-on-error: true
 
       - name: Upload Dive report
         if: always()
@@ -153,23 +148,24 @@ jobs:
       - name: Load image
         run: docker load -i image.tar
 
-      - name: Run Trivy vulnerability scan
+      - name: Run Trivy (table output)
         uses: aquasecurity/trivy-action@master
         with:
           image-ref: ${{ env.IMAGE_NAME }}:${{ env.IMAGE_TAG }}
           format: table
           output: trivy-report.txt
           severity: UNKNOWN,LOW,MEDIUM,HIGH,CRITICAL
-          exit-code: "0" # set to 1 to fail on findings
+          exit-code: "0"
 
-      - name: Run Trivy (SARIF for GitHub Security tab)
+      - name: Run Trivy (SARIF output)
         uses: aquasecurity/trivy-action@master
         with:
           image-ref: ${{ env.IMAGE_NAME }}:${{ env.IMAGE_TAG }}
           format: sarif
           output: trivy-results.sarif
+          exit-code: "0"
 
-      - name: Upload Trivy report
+      - name: Upload Trivy reports
         if: always()
         uses: actions/upload-artifact@v4
         with:
@@ -180,7 +176,7 @@ jobs:
 
       - name: Upload Trivy SARIF to GitHub Security
         if: always()
-        uses: github/codeql-action/upload-sarif@v3
+        uses: github/codeql-action/upload-sarif@v4
         with:
           sarif_file: trivy-results.sarif
-        continue-on-error: true # requires GitHub Advanced Security on private repos
+        continue-on-error: true
