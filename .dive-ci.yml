@@ -1,0 +1,12 @@
+# Dive CI configuration
+# https://github.com/wagoodman/dive
+
+rules:
+  # Minimum image efficiency (wasted space ratio)
+  lowestEfficiency: 0.95
+
+  # Maximum wasted bytes allowed (50MB)
+  highestWastedBytes: 52428800
+
+  # Fail if files are added and then removed in a later layer (wasted space)
+  highestUserWastedPercent: 0.10

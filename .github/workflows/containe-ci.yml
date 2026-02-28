@@ -1,0 +1,186 @@
+name: Docker CI
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+    branches: ["**"]
+
+env:
+  IMAGE_NAME: ${{ github.repository }}
+  IMAGE_TAG: ${{ github.sha }}
+
+jobs:
+  hadolint:
+    name: Hadolint - Dockerfile Lint
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Run Hadolint
+        uses: hadolint/hadolint-action@v3.1.0
+        with:
+          dockerfile: Dockerfile
+          failure-threshold: error
+          ignore: DL3042 # ignore if you use --no-cache-dir already
+
+      - name: Upload Hadolint results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: hadolint-report
+          path: hadolint-results.sarif
+          if-no-files-found: ignore
+
+  build:
+    name: Build Docker Image
+    runs-on: ubuntu-latest
+    needs: hadolint
+    outputs:
+      image: ${{ env.IMAGE_NAME }}:${{ env.IMAGE_TAG }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: false
+          load: true
+          tags: ${{ env.IMAGE_NAME }}:${{ env.IMAGE_TAG }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Save image to tarball
+        run: docker save ${{ env.IMAGE_NAME }}:${{ env.IMAGE_TAG }} -o image.tar
+
+      - name: Upload image artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: docker-image
+          path: image.tar
+          retention-days: 1
+
+  dockle:
+    name: Dockle - CIS Benchmark
+    runs-on: ubuntu-latest
+    needs: build
+    steps:
+      - name: Download image artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: docker-image
+
+      - name: Load image
+        run: docker load -i image.tar
+
+      - name: Run Dockle
+        run: |
+          VERSION=$(curl -s https://api.github.com/repos/goodwithtech/dockle/releases/latest \
+            | grep '"tag_name":' | sed -E 's/.*"v([^"]+)".*/\1/')
+          curl -fsSL -o dockle.tar.gz \
+            "https://github.com/goodwithtech/dockle/releases/download/v${VERSION}/dockle_${VERSION}_Linux-64bit.tar.gz"
+          tar -xzf dockle.tar.gz dockle
+          chmod +x dockle
+
+          ./dockle \
+            --ignore DKL-DI-0004 \
+            --format json \
+            --output dockle-report.json \
+            ${{ env.IMAGE_NAME }}:${{ env.IMAGE_TAG }} || true
+
+          # Also print to logs
+          ./dockle \
+            --ignore DKL-DI-0004 \
+            ${{ env.IMAGE_NAME }}:${{ env.IMAGE_TAG }} || true
+
+      - name: Upload Dockle report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: dockle-report
+          path: dockle-report.json
+
+  dive:
+    name: Dive - Image Efficiency
+    runs-on: ubuntu-latest
+    needs: build
+    steps:
+      - name: Download image artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: docker-image
+
+      - name: Load image
+        run: docker load -i image.tar
+
+      - name: Run Dive
+        run: |
+          VERSION=$(curl -s https://api.github.com/repos/wagoodman/dive/releases/latest \
+            | grep '"tag_name":' | sed -E 's/.*"v([^"]+)".*/\1/')
+          curl -fsSL -o dive.tar.gz \
+            "https://github.com/wagoodman/dive/releases/download/v${VERSION}/dive_${VERSION}_linux_amd64.tar.gz"
+          tar -xzf dive.tar.gz dive
+          chmod +x dive
+
+          CI=true ./dive \
+            --ci-config .dive-ci.yml \
+            ${{ env.IMAGE_NAME }}:${{ env.IMAGE_TAG }} \
+            2>&1 | tee dive-report.txt || true
+
+      - name: Upload Dive report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: dive-report
+          path: dive-report.txt
+
+  trivy:
+    name: Trivy - Vulnerability Scan
+    runs-on: ubuntu-latest
+    needs: build
+    steps:
+      - name: Download image artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: docker-image
+
+      - name: Load image
+        run: docker load -i image.tar
+
+      - name: Run Trivy vulnerability scan
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: ${{ env.IMAGE_NAME }}:${{ env.IMAGE_TAG }}
+          format: table
+          output: trivy-report.txt
+          severity: UNKNOWN,LOW,MEDIUM,HIGH,CRITICAL
+          exit-code: "0" # set to 1 to fail on findings
+
+      - name: Run Trivy (SARIF for GitHub Security tab)
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: ${{ env.IMAGE_NAME }}:${{ env.IMAGE_TAG }}
+          format: sarif
+          output: trivy-results.sarif
+
+      - name: Upload Trivy report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: trivy-report
+          path: |
+            trivy-report.txt
+            trivy-results.sarif
+
+      - name: Upload Trivy SARIF to GitHub Security
+        if: always()
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: trivy-results.sarif
+        continue-on-error: true # requires GitHub Advanced Security on private repos
