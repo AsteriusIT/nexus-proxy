@@ -4,7 +4,7 @@ WORKDIR /selfproxy
 
 COPY ./requirements.txt /selfproxy/requirements.txt
 
-RUN pip install --no-cache-dir --upgrade pip && \
+RUN pip install --no-cache-dir pip==26.0.1 && \
     pip install --no-cache-dir --upgrade -r /selfproxy/requirements.txt
 
 COPY ./app /selfproxy/app
