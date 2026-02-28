@@ -210,14 +210,16 @@ jobs:
             exit 0
           fi
 
-          EFFICIENCY=$(grep -oP 'Image efficiency score: \K[\d.]+' dive-report.txt || echo "N/A")
-          WASTED=$(grep -oP 'wasted space: \K[^\n]+' dive-report.txt | head -1 || echo "N/A")
-          RESULT=$(grep -E "^(PASS|FAIL)" dive-report.txt | tail -1 || echo "N/A")
+          EFFICIENCY=$(grep -oP 'efficiency: \K[\d.]+' dive-report.txt | head -1 || echo "N/A")
+          WASTED=$(grep -oP 'wastedBytes: \K[^\n]+' dive-report.txt | head -1 || echo "N/A")
+          RESULT=$(grep -E "^Result:(PASS|FAIL)" dive-report.txt | tail -1 || echo "N/A")
 
-          if echo "$RESULT" | grep -q "PASS"; then
+          if echo "$RESULT" | grep -q "Result:PASS"; then
             STATUS="✅ Passed"
-          else
+          elif echo "$RESULT" | grep -q "Result:FAIL"; then
             STATUS="❌ Failed"
+          else
+            STATUS="⚠️ Unknown"
           fi
 
           echo "**Status: $STATUS**" >> $GITHUB_STEP_SUMMARY
