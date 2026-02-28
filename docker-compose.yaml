@@ -1,0 +1,29 @@
+services:
+  nexus:
+    image: sonatype/nexus3
+    container_name: nexus
+    volumes:
+      - nexus-data:/nexus-data
+    ports:
+      - "8081:8081"
+    healthcheck:
+      test:
+        ["CMD", "curl", "-f", "http://localhost:8081/service/rest/v1/status"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 60s
+    restart: unless-stopped
+
+  nexus-self-proxy:
+    image: rg.fr-par.scw.cloud/asterius-public/nexus-self-proxy:v1.0.0
+    container_name: nexus-self-proxy
+    environment:
+      PROXY_BEARER_TOKEN: ${PROXY_BEARER_TOKEN}
+    depends_on:
+      nexus:
+        condition: service_healthy
+    restart: unless-stopped
+
+volumes:
+  nexus-data:

@@ -9,6 +9,9 @@ RUN pip install --no-cache-dir pip==26.0.1 && \
 
 COPY ./app /selfproxy/app
 
+RUN adduser -D selfproxy && \
+    chown -R selfproxy:selfproxy /selfproxy
+
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
     CMD wget -qO- http://localhost:80/health || exit 1
 
