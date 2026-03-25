@@ -58,7 +58,9 @@ cd tests/npm && npm install
 
 **Registry routers** (all under `app/routers/`):
 
-- `npm.py` — npm registry. Metadata endpoints fetch from upstream and rewrite tarball URLs. Tarball downloads are streamed in 64KB chunks, gated by whitelist. Supports scoped (`@scope/name`) and unscoped packages.
+- `admin.py` — admin endpoints for managing security scanners at runtime (`GET/PUT /admin/scanner`).
+
+- `npm.py` — npm registry. Metadata endpoints fetch from upstream and rewrite tarball URLs. Tarball downloads are streamed in 64KB chunks, gated by whitelist and optional security scan. Supports scoped (`@scope/name`) and unscoped packages. Whitelist PATCH triggers a Checkmarx SCA scan when a scanner is active.
 
 - `pypi.py` — PyPI registry. Supports Simple API (PEP 503), JSON metadata API, and file downloads from `files.pythonhosted.org`. Package names are PEP 503-normalized.
 
@@ -67,6 +69,11 @@ cd tests/npm && npm install
 - `nuget.py` — NuGet v3 API. Proxies service index, search, registration, and flat container endpoints. URLs in responses are rewritten. Downloads gated on lowercase package ID.
 
 - `rubygems.py` — RubyGems.org. Supports JSON API, compact index, dependency resolution, and `.gem` file downloads. Gem names extracted from filenames.
+
+**Security scanning** (under `app/`):
+
+- `scanner.py` — abstract scanner interface (`SecurityScanner`), `ScanResult`/`ScanStatus` models, and a provider registry. Admins can hot-swap the active scanner via `PUT /admin/scanner` or set the `SECURITY_SCANNER` env var.
+- `scanners/checkmarx.py` — Checkmarx One SCA implementation. Creates a minimal `package.json` for the requested package, ZIPs it, uploads via presigned URL, triggers an SCA-only scan, polls for completion, and returns vulnerabilities. Fail-open on scanner errors (development is not blocked by infrastructure issues).
 
 ### Environment variables
 
@@ -80,6 +87,15 @@ cd tests/npm && npm install
 | `MAVEN_UPSTREAM_URL`      | `https://repo1.maven.org/maven2`    | Maven Central URL                  |
 | `NUGET_UPSTREAM_URL`      | `https://api.nuget.org`             | NuGet v3 API URL                   |
 | `RUBYGEMS_UPSTREAM_URL`   | `https://rubygems.org`              | RubyGems URL                       |
+| `SECURITY_SCANNER`        | *(none)*                             | Active scanner name (e.g. `checkmarx`) |
+| `CHECKMARX_BASE_URL`      | `https://eu-2.ast.checkmarx.net`    | Checkmarx One API base URL         |
+| `CHECKMARX_IAM_URL`       | `https://eu-2.iam.checkmarx.net`    | Checkmarx IAM base URL             |
+| `CHECKMARX_TENANT`        | *(required if scanner active)*       | Tenant / realm name                |
+| `CHECKMARX_CLIENT_ID`     | *(required if scanner active)*       | OAuth2 client ID                   |
+| `CHECKMARX_CLIENT_SECRET` | *(required if scanner active)*       | OAuth2 client secret               |
+| `CHECKMARX_PROJECT_NAME`  | `nexus-proxy-sca`                    | Checkmarx project name             |
+| `CHECKMARX_SCAN_TIMEOUT`  | `300`                                | Max seconds to wait for scan       |
+| `CHECKMARX_SEVERITY_THRESHOLD` | `CRITICAL,HIGH`               | Severities that block download     |
 
 ## CI Pipeline
 

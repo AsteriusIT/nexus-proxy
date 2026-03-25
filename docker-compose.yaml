@@ -29,6 +29,17 @@ services:
       # MAVEN_UPSTREAM_URL: https://repo1.maven.org/maven2
       # NUGET_UPSTREAM_URL: https://api.nuget.org
       # RUBYGEMS_UPSTREAM_URL: https://rubygems.org
+
+      # Security scanner (optional — omit or leave empty to disable scanning)
+      # SECURITY_SCANNER: checkmarx
+      # CHECKMARX_BASE_URL: https://eu-2.ast.checkmarx.net
+      # CHECKMARX_IAM_URL: https://eu-2.iam.checkmarx.net
+      # CHECKMARX_TENANT: ${CHECKMARX_TENANT}
+      # CHECKMARX_CLIENT_ID: ${CHECKMARX_CLIENT_ID}
+      # CHECKMARX_CLIENT_SECRET: ${CHECKMARX_CLIENT_SECRET}
+      # CHECKMARX_PROJECT_NAME: nexus-proxy-sca
+      # CHECKMARX_SCAN_TIMEOUT: "300"
+      # CHECKMARX_SEVERITY_THRESHOLD: CRITICAL,HIGH
     depends_on:
       nexus:
         condition: service_healthy

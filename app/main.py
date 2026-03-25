@@ -21,8 +21,12 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI, status
 from pydantic import BaseModel
 
+from . import scanner as scanner_mod
 from .http_client import close_all
-from .routers import maven, npm, nuget, pypi, rubygems
+from .routers import admin, maven, npm, nuget, pypi, rubygems
+
+# Import scanners package to trigger auto-registration of all bundled scanners
+from . import scanners as _scanners  # noqa: F401
 
 DESCRIPTION = """\
 Transparent whitelisting proxy for package registries, designed to work
@@ -45,6 +49,18 @@ alongside **Sonatype Nexus Repository Manager**.
 | Maven      | `/maven`      | repo1.maven.org/maven2            |
 | NuGet      | `/nuget`      | api.nuget.org                     |
 | RubyGems   | `/rubygems`   | rubygems.org                      |
+
+## Security scanning
+
+When a security scanner is activated (via `PUT /admin/scanner` or the
+`SECURITY_SCANNER` env var), whitelisting an npm package triggers an SCA scan
+before the download is allowed.  Packages that fail the scan are **blocked**.
+
+Currently supported scanners:
+- **checkmarx** — Checkmarx One SCA (Full Scan approach).
+
+Use the `/admin/scanner` endpoints to view, activate, or disable scanners at
+runtime.
 
 ## Authentication
 
@@ -80,6 +96,11 @@ TAG_METADATA = [
         "compact index, and `.gem` file downloads.",
     },
     {
+        "name": "admin",
+        "description": "Administrative endpoints for managing security scanners "
+        "and proxy configuration at runtime.",
+    },
+    {
         "name": "healthcheck",
         "description": "Operational health check.",
     },
@@ -91,6 +112,7 @@ async def lifespan(_app: FastAPI):
     """Application lifespan: close all HTTP clients on shutdown."""
     yield
     await close_all()
+    await scanner_mod.close_all()
 
 
 app = FastAPI(
@@ -108,6 +130,7 @@ app.include_router(pypi.router)
 app.include_router(maven.router)
 app.include_router(nuget.router)
 app.include_router(rubygems.router)
+app.include_router(admin.router)
 
 
 class HealthCheck(BaseModel):
