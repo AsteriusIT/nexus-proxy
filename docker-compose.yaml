@@ -16,10 +16,19 @@ services:
     restart: unless-stopped
 
   nexus-self-proxy:
-    image: rg.fr-par.scw.cloud/asterius-public/nexus-self-proxy:v1.0.0
+    image: rg.fr-par.scw.cloud/asterius-public/nexus-self-proxy:v2.0.0
     container_name: nexus-self-proxy
     environment:
+      # Authentication (optional — omit to run without auth)
       PROXY_BEARER_TOKEN: ${PROXY_BEARER_TOKEN}
+
+      # Upstream registry overrides (all optional — defaults to public registries)
+      # NPM_UPSTREAM_REGISTRY: https://registry.npmjs.org
+      # PYPI_UPSTREAM_SIMPLE: https://pypi.org/simple
+      # PYPI_UPSTREAM_FILES: https://files.pythonhosted.org
+      # MAVEN_UPSTREAM_URL: https://repo1.maven.org/maven2
+      # NUGET_UPSTREAM_URL: https://api.nuget.org
+      # RUBYGEMS_UPSTREAM_URL: https://rubygems.org
     depends_on:
       nexus:
         condition: service_healthy

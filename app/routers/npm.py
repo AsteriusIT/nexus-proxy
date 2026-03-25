@@ -1,45 +1,34 @@
-from collections import defaultdict
-from contextlib import asynccontextmanager
-import json
+"""npm registry proxy router.
 
-import httpx
+Proxies metadata from https://registry.npmjs.org and rewrites tarball URLs so
+that downloads are routed through this proxy.  Tarball downloads are gated by
+an in-memory whitelist; after a successful download the entry is removed
+(Nexus caches the artifact).
+
+Environment variables
+---------------------
+NPM_UPSTREAM_REGISTRY : str
+    Base URL of the upstream npm registry (default: ``https://registry.npmjs.org``).
+"""
+
+import json
+import os
+
 from fastapi import APIRouter, Depends, Request, Response
 from starlette.responses import StreamingResponse
 
+from .. import whitelist
 from ..auth import require_bearer_token
+from ..http_client import get_client
 
-NPMJS_REGISTRY = "https://registry.npmjs.org"
-TIMEOUT = httpx.Timeout(connect=5, read=30, write=10, pool=5)
+REGISTRY = "npm"
+UPSTREAM_URL = os.environ.get("NPM_UPSTREAM_REGISTRY", "https://registry.npmjs.org").rstrip("/")
 
 router = APIRouter(
     prefix="/npm",
     tags=["npm"],
     dependencies=[Depends(require_bearer_token)],
 )
-
-# Shared client — initialize via lifespan or startup event
-_client: httpx.AsyncClient | None = None
-
-whitelisted_packages: dict[str, set[str]] = defaultdict(set)
-
-
-def get_client() -> httpx.AsyncClient:
-    global _client
-    if _client is None or _client.is_closed:
-        _client = httpx.AsyncClient(
-            base_url=NPMJS_REGISTRY,
-            timeout=TIMEOUT,
-            follow_redirects=True,
-        )
-    return _client
-
-
-@asynccontextmanager
-async def lifespan(_app):
-    """Attach to your FastAPI app: FastAPI(lifespan=lifespan)"""
-    yield
-    if _client and not _client.is_closed:
-        await _client.aclose()
 
 
 # ---------------------------------------------------------------------------
@@ -52,20 +41,10 @@ def _registry_path(scope: str | None, package_name: str) -> str:
 
 
 def _rewrite_tarball_urls(metadata: dict, proxy_base_url: str) -> dict:
-    """Replace registry.npmjs.org tarball URLs with our proxy URL."""
+    """Replace upstream tarball URLs with our proxy URL."""
     raw = json.dumps(metadata)
-    raw = raw.replace(NPMJS_REGISTRY, proxy_base_url)
+    raw = raw.replace(UPSTREAM_URL, proxy_base_url)
     return json.loads(raw)
-
-
-def _is_whitelisted(scope: str | None, package_name: str) -> bool:
-    key = scope if scope else "_"
-    return package_name in whitelisted_packages[key]
-
-
-def _whitelist(scope: str | None, package_name: str) -> None:
-    key = scope if scope else "_"
-    whitelisted_packages[key].add(package_name)
 
 
 # ---------------------------------------------------------------------------
@@ -74,7 +53,7 @@ def _whitelist(scope: str | None, package_name: str) -> None:
 
 
 async def _proxy_metadata(request: Request, scope: str | None, package_name: str):
-    client = get_client()
+    client = get_client(UPSTREAM_URL, name=REGISTRY)
     path = _registry_path(scope, package_name)
 
     upstream = await client.get(path)
@@ -97,12 +76,22 @@ async def _proxy_metadata(request: Request, scope: str | None, package_name: str
     )
 
 
-@router.get("/{package_name}")
+@router.get(
+    "/{package_name}",
+    summary="Get unscoped package metadata",
+    description="Fetch metadata for an unscoped npm package from the upstream registry. "
+    "Tarball URLs in the response are rewritten to route through this proxy.",
+)
 async def get_package_metadata(package_name: str, request: Request):
     return await _proxy_metadata(request, scope=None, package_name=package_name)
 
 
-@router.get("/@{scope}/{package_name}")
+@router.get(
+    "/@{scope}/{package_name}",
+    summary="Get scoped package metadata",
+    description="Fetch metadata for a scoped npm package (e.g. ``@scope/name``) from the "
+    "upstream registry. Tarball URLs are rewritten to route through this proxy.",
+)
 async def get_scoped_package_metadata(scope: str, package_name: str, request: Request):
     return await _proxy_metadata(request, scope=scope, package_name=package_name)
 
@@ -113,10 +102,10 @@ async def get_scoped_package_metadata(scope: str, package_name: str, request: Re
 
 
 async def _proxy_tarball(scope: str | None, package_name: str, tarball_filename: str):
-    if not _is_whitelisted(scope, package_name):
+    if not whitelist.is_whitelisted(REGISTRY, scope, package_name):
         return Response(content="Forbidden", status_code=403)
 
-    client = get_client()
+    client = get_client(UPSTREAM_URL, name=REGISTRY)
     path = _registry_path(scope, package_name)
     url = f"{path}/-/{tarball_filename}"
 
@@ -128,8 +117,7 @@ async def _proxy_tarball(scope: str | None, package_name: str, tarball_filename:
         return Response(content=body, status_code=upstream.status_code)
 
     # Remove from whitelist — Nexus will cache the tarball from here
-    key = scope if scope else "_"
-    whitelisted_packages[key].discard(package_name)
+    whitelist.remove(REGISTRY, scope, package_name)
 
     async def stream():
         try:
@@ -146,12 +134,23 @@ async def _proxy_tarball(scope: str | None, package_name: str, tarball_filename:
     )
 
 
-@router.get("/{package_name}/-/{tarball_filename}")
+@router.get(
+    "/{package_name}/-/{tarball_filename}",
+    summary="Download unscoped package tarball",
+    description="Stream a tarball for an unscoped npm package. The package must be "
+    "whitelisted first via the PATCH endpoint. After a successful download "
+    "the package is removed from the whitelist.",
+)
 async def get_package_tarball(package_name: str, tarball_filename: str):
     return await _proxy_tarball(None, package_name, tarball_filename)
 
 
-@router.get("/@{scope}/{package_name}/-/{tarball_filename}")
+@router.get(
+    "/@{scope}/{package_name}/-/{tarball_filename}",
+    summary="Download scoped package tarball",
+    description="Stream a tarball for a scoped npm package. The package must be "
+    "whitelisted first via the PATCH endpoint.",
+)
 async def get_scoped_package_tarball(
     scope: str, package_name: str, tarball_filename: str
 ):
@@ -163,13 +162,22 @@ async def get_scoped_package_tarball(
 # ---------------------------------------------------------------------------
 
 
-@router.patch("/{package_name}")
+@router.patch(
+    "/{package_name}",
+    summary="Whitelist an unscoped package",
+    description="Add an unscoped npm package to the download whitelist. "
+    "The package can then be downloaded once through the proxy.",
+)
 async def whitelist_package(package_name: str):
-    _whitelist(None, package_name)
+    whitelist.add(REGISTRY, None, package_name)
     return {"whitelisted": package_name}
 
 
-@router.patch("/@{scope}/{package_name}")
+@router.patch(
+    "/@{scope}/{package_name}",
+    summary="Whitelist a scoped package",
+    description="Add a scoped npm package (e.g. ``@scope/name``) to the download whitelist.",
+)
 async def whitelist_scoped_package(scope: str, package_name: str):
-    _whitelist(scope, package_name)
+    whitelist.add(REGISTRY, scope, package_name)
     return {"whitelisted": f"@{scope}/{package_name}"}
