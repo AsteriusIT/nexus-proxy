@@ -4,17 +4,17 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-Nexus-proxy is a FastAPI-based transparent proxy for package registries that enforces package whitelisting. Only whitelisted packages can be downloaded; metadata is proxied transparently with download URLs rewritten to route through the proxy. After a successful download, the package is removed from the whitelist (Nexus caches it, so no repeated proxy downloads needed). State is in-memory and lost on restart.
+Nexus-proxy is a FastAPI-based transparent proxy for package registries. All requests are forwarded to upstream registries with download URLs rewritten to route through the proxy. When a security scanner is active, npm tarball downloads are scanned on the fly and blocked if vulnerabilities exceed the severity threshold. Scanner errors are fail-open (development is not blocked by infrastructure issues).
 
 ### Supported registries
 
-| Registry   | Prefix        | Upstream                          | Whitelist key              |
-|------------|---------------|-----------------------------------|----------------------------|
-| npm        | `/npm`        | registry.npmjs.org                | scope + package name       |
-| PyPI       | `/pypi`       | pypi.org / files.pythonhosted.org | normalized package name    |
-| Maven      | `/maven`      | repo1.maven.org/maven2            | groupId + artifactId       |
-| NuGet      | `/nuget`      | api.nuget.org                     | lowercase package ID       |
-| RubyGems   | `/rubygems`   | rubygems.org                      | gem name                   |
+| Registry   | Prefix        | Upstream                          |
+|------------|---------------|-----------------------------------|
+| npm        | `/npm`        | registry.npmjs.org                |
+| PyPI       | `/pypi`       | pypi.org / files.pythonhosted.org |
+| Maven      | `/maven`      | repo1.maven.org/maven2            |
+| NuGet      | `/nuget`      | api.nuget.org                     |
+| RubyGems   | `/rubygems`   | rubygems.org                      |
 
 ## Commands
 
@@ -23,7 +23,7 @@ Nexus-proxy is a FastAPI-based transparent proxy for package registries that enf
 python -m uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
 ```
 
-### Run with Docker Compose (includes Nexus)
+### Run with Docker Compose (includes Nexus + Trivy)
 ```bash
 docker-compose up -d
 ```
@@ -33,11 +33,9 @@ docker-compose up -d
 hadolint Dockerfile
 ```
 
-### No automated test suite
-There are no pytest/unittest tests. Testing is manual via shell scripts in `tests/npm/`:
+### Testing
+There are no pytest/unittest tests. Testing is manual:
 ```bash
-# Whitelist all packages from a lock file, then npm install
-./tests/npm/whitelist-all.bash tests/npm/package-lock.json
 cd tests/npm && npm install
 
 # Clean up Nexus repository
@@ -49,7 +47,6 @@ cd tests/npm && npm install
 **Entry point:** `app/main.py` — creates the FastAPI app with Swagger/OpenAPI docs, mounts all registry routers, manages HTTP client lifecycle via lifespan, exposes `/health`.
 
 **Shared modules:**
-- `app/whitelist.py` — registry-aware in-memory whitelist. Keyed by `(registry, namespace, package)`.
 - `app/http_client.py` — HTTP client factory. One `httpx.AsyncClient` per upstream registry, lazy-init, closed on shutdown via lifespan.
 
 **Auth:** `app/auth.py` — Bearer token via `Depends()`. If `PROXY_BEARER_TOKEN` (or `PROXY_BEARER_TOKEN_FILE`) is set, all routes require it. If unset, the API is open.
@@ -60,20 +57,21 @@ cd tests/npm && npm install
 
 - `admin.py` — admin endpoints for managing security scanners at runtime (`GET/PUT /admin/scanner`).
 
-- `npm.py` — npm registry. Metadata endpoints fetch from upstream and rewrite tarball URLs. Tarball downloads are streamed in 64KB chunks, gated by whitelist and optional security scan. Supports scoped (`@scope/name`) and unscoped packages. Whitelist PATCH triggers a Checkmarx SCA scan when a scanner is active.
+- `npm.py` — npm registry. Metadata endpoints fetch from upstream and rewrite tarball URLs. Tarball downloads are streamed in 64KB chunks. When a scanner is active, downloads are scanned on the fly (results cached by package@version). Supports scoped (`@scope/name`) and unscoped packages.
 
-- `pypi.py` — PyPI registry. Supports Simple API (PEP 503), JSON metadata API, and file downloads from `files.pythonhosted.org`. Package names are PEP 503-normalized.
+- `pypi.py` — PyPI registry. Supports Simple API (PEP 503), JSON metadata API, and file downloads from `files.pythonhosted.org`. Package names are PEP 503-normalized. Downloads forwarded transparently.
 
-- `maven.py` — Maven Central. Path-based layout (`groupId/artifactId/version/file`). Metadata and artifact downloads separated into `/metadata/` and `/artifact/` prefixed paths. Whitelist keyed on `groupId:artifactId`.
+- `maven.py` — Maven Central. Path-based layout (`groupId/artifactId/version/file`). Metadata and artifact downloads separated into `/metadata/` and `/artifact/` prefixed paths. Downloads forwarded transparently.
 
-- `nuget.py` — NuGet v3 API. Proxies service index, search, registration, and flat container endpoints. URLs in responses are rewritten. Downloads gated on lowercase package ID.
+- `nuget.py` — NuGet v3 API. Proxies service index, search, registration, and flat container endpoints. URLs in responses are rewritten. Downloads forwarded transparently.
 
-- `rubygems.py` — RubyGems.org. Supports JSON API, compact index, dependency resolution, and `.gem` file downloads. Gem names extracted from filenames.
+- `rubygems.py` — RubyGems.org. Supports JSON API, compact index, dependency resolution, and `.gem` file downloads.
 
 **Security scanning** (under `app/`):
 
 - `scanner.py` — abstract scanner interface (`SecurityScanner`), `ScanResult`/`ScanStatus` models, and a provider registry. Admins can hot-swap the active scanner via `PUT /admin/scanner` or set the `SECURITY_SCANNER` env var.
-- `scanners/checkmarx.py` — Checkmarx One SCA implementation. Creates a minimal `package.json` for the requested package, ZIPs it, uploads via presigned URL, triggers an SCA-only scan, polls for completion, and returns vulnerabilities. Fail-open on scanner errors (development is not blocked by infrastructure issues).
+- `scanners/checkmarx.py` — Checkmarx One SCA implementation. Creates a minimal `package.json` for the requested package, ZIPs it, uploads via presigned URL, triggers an SCA-only scan, polls for completion, and returns vulnerabilities. Fail-open on scanner errors.
+- `scanners/trivy.py` — Trivy implementation. Runs `trivy fs` as a subprocess against a temp directory containing a `package.json`. Supports optional client/server mode via `TRIVY_SERVER_URL`. Fail-open on scanner errors.
 
 ### Environment variables
 
@@ -87,7 +85,7 @@ cd tests/npm && npm install
 | `MAVEN_UPSTREAM_URL`      | `https://repo1.maven.org/maven2`    | Maven Central URL                  |
 | `NUGET_UPSTREAM_URL`      | `https://api.nuget.org`             | NuGet v3 API URL                   |
 | `RUBYGEMS_UPSTREAM_URL`   | `https://rubygems.org`              | RubyGems URL                       |
-| `SECURITY_SCANNER`        | *(none)*                             | Active scanner name (e.g. `checkmarx`) |
+| `SECURITY_SCANNER`        | *(none)*                             | Active scanner name (e.g. `checkmarx`, `trivy`) |
 | `CHECKMARX_BASE_URL`      | `https://eu-2.ast.checkmarx.net`    | Checkmarx One API base URL         |
 | `CHECKMARX_IAM_URL`       | `https://eu-2.iam.checkmarx.net`    | Checkmarx IAM base URL             |
 | `CHECKMARX_TENANT`        | *(required if scanner active)*       | Tenant / realm name                |
@@ -96,6 +94,11 @@ cd tests/npm && npm install
 | `CHECKMARX_PROJECT_NAME`  | `nexus-proxy-sca`                    | Checkmarx project name             |
 | `CHECKMARX_SCAN_TIMEOUT`  | `300`                                | Max seconds to wait for scan       |
 | `CHECKMARX_SEVERITY_THRESHOLD` | `CRITICAL,HIGH`               | Severities that block download     |
+| `TRIVY_BINARY`            | `trivy`                              | Path to the Trivy binary           |
+| `TRIVY_SERVER_URL`        | *(none)*                             | Trivy server URL (client/server mode) |
+| `TRIVY_TIMEOUT`           | `300`                                | Max seconds to wait for scan       |
+| `TRIVY_SEVERITY_THRESHOLD`| `CRITICAL,HIGH`                      | Severities that block download     |
+| `TRIVY_EXTRA_ARGS`        | *(none)*                             | Extra CLI args for Trivy           |
 
 ## CI Pipeline
 

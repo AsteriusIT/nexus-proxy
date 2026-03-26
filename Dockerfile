@@ -2,6 +2,10 @@ FROM docker.io/python:3.14.3-alpine3.23
 
 WORKDIR /selfproxy
 
+# Install Trivy (optional scanner — only adds ~50MB to the image)
+RUN apk add --no-cache curl && \
+    curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh | sh -s -- -b /usr/local/bin
+
 COPY ./requirements.txt /selfproxy/requirements.txt
 
 RUN pip install --no-cache-dir pip==26.0.1 && \

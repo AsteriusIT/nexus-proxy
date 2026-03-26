@@ -1,8 +1,8 @@
 # List and delete all components in a repo
 NEXUS_URL="http://localhost:8081"
-REPO="npmjs"
+REPO="npm"
 USER="admin"
-PASS="ff218414-e464-4167-b47c-38678a7cc3a4"
+PASS="qwertzqwertz"
 
 # Delete all ASSETS (includes metadata)
 TOKEN=""

@@ -2,16 +2,15 @@
 
 Proxies the `PEP 503 Simple API <https://peps.python.org/pep-0503/>`_ from
 https://pypi.org and rewrites download URLs so that packages are fetched
-through this proxy.  Downloads are gated by an in-memory whitelist.
+through this proxy.  Downloads are forwarded transparently.
 
 How it works
 ------------
 1. ``pip`` requests ``/pypi/simple/{package}/`` — the proxy fetches the page
    from upstream PyPI and rewrites every ``files.pythonhosted.org`` link to
    point at ``/pypi/files/...``.
-2. ``pip`` then requests the file through the proxy (``/pypi/files/...``).
-   If the package is whitelisted the file is streamed from upstream and the
-   whitelist entry is consumed.
+2. ``pip`` then requests the file through the proxy (``/pypi/files/...``),
+   which is streamed from upstream.
 
 Environment variables
 ---------------------
@@ -28,7 +27,6 @@ import re
 from fastapi import APIRouter, Depends, Request, Response
 from starlette.responses import StreamingResponse
 
-from .. import whitelist
 from ..auth import require_bearer_token
 from ..http_client import get_client
 
@@ -161,29 +159,16 @@ async def json_version_metadata(package_name: str, version: str, request: Reques
 
 
 # ---------------------------------------------------------------------------
-# File download (streamed, whitelist-gated)
+# File download (streamed)
 # ---------------------------------------------------------------------------
 
 
 @router.get(
     "/files/{file_path:path}",
     summary="Download a package file",
-    description="Stream a package file (wheel, sdist, etc.) from upstream PyPI. "
-    "The package must be whitelisted first. After a successful download "
-    "the whitelist entry is consumed.",
+    description="Stream a package file (wheel, sdist, etc.) from upstream PyPI.",
 )
 async def download_file(file_path: str):
-    # file_path looks like: packages/<hash>/<hash>/<hash>/<filename>
-    # Extract package name from filename (e.g. "requests-2.31.0.tar.gz" → "requests")
-    filename = file_path.rsplit("/", 1)[-1]
-    # Handle wheel names (package-version-...) and sdist (package-version.tar.gz)
-    # PEP 625: normalized name uses dashes
-    name_part = re.split(r"-\d", filename, maxsplit=1)[0]
-    normalized = _normalize_name(name_part)
-
-    if not whitelist.is_whitelisted(REGISTRY, None, normalized):
-        return Response(content="Forbidden", status_code=403)
-
     client = get_client(UPSTREAM_FILES, name=f"{REGISTRY}-files")
     upstream = await client.send(
         client.build_request("GET", f"/{file_path}"), stream=True
@@ -193,8 +178,6 @@ async def download_file(file_path: str):
         body = await upstream.aread()
         await upstream.aclose()
         return Response(content=body, status_code=upstream.status_code)
-
-    whitelist.remove(REGISTRY, None, normalized)
 
     async def stream():
         try:
@@ -209,20 +192,3 @@ async def download_file(file_path: str):
         media_type="application/octet-stream",
         headers={"content-length": upstream.headers.get("content-length", "")},
     )
-
-
-# ---------------------------------------------------------------------------
-# Whitelist management
-# ---------------------------------------------------------------------------
-
-
-@router.patch(
-    "/{package_name}",
-    summary="Whitelist a Python package",
-    description="Add a Python package to the download whitelist. The name is "
-    "normalized per PEP 503 before storage.",
-)
-async def whitelist_pypi_package(package_name: str):
-    normalized = _normalize_name(package_name)
-    whitelist.add(REGISTRY, None, normalized)
-    return {"whitelisted": normalized}

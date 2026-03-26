@@ -5,3 +5,4 @@ Import this package to auto-register all bundled scanners with the
 """
 
 from . import checkmarx  # noqa: F401 — triggers registration
+from . import trivy  # noqa: F401 — triggers registration

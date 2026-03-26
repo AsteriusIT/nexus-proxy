@@ -101,8 +101,10 @@ class CheckmarxScanner(SecurityScanner):
     async def _ensure_token(self) -> str:
         """Return a valid access token, refreshing if needed."""
         if self._token and time.time() < self._token_expires_at - 60:
+            logger.debug("[checkmarx] Reusing cached token (expires in %ds)", int(self._token_expires_at - time.time()))
             return self._token
 
+        logger.debug("[checkmarx] Requesting new OAuth2 token from %s (tenant=%s)", IAM_URL, TENANT)
         url = (
             f"{IAM_URL}/auth/realms/{TENANT}/protocol/openid-connect/token"
         )
@@ -120,6 +122,7 @@ class CheckmarxScanner(SecurityScanner):
         data = resp.json()
         self._token = data["access_token"]
         self._token_expires_at = time.time() + data.get("expires_in", 3600)
+        logger.info("[checkmarx] Authenticated successfully (token expires in %ds)", data.get("expires_in", 3600))
         return self._token  # type: ignore[return-value]
 
     async def _auth_headers(self) -> dict[str, str]:
@@ -162,7 +165,7 @@ class CheckmarxScanner(SecurityScanner):
         )
         resp.raise_for_status()
         self._project_id = resp.json()["id"]
-        logger.info("Created Checkmarx project: %s (%s)", PROJECT_NAME, self._project_id)
+        logger.info("[checkmarx] Created new project: %s (%s)", PROJECT_NAME, self._project_id)
         return self._project_id  # type: ignore[return-value]
 
     # -- Scan workflow ------------------------------------------------------
@@ -232,6 +235,7 @@ class CheckmarxScanner(SecurityScanner):
         client = self._get_client()
         deadline = time.time() + SCAN_TIMEOUT
         terminal = {"Completed", "Partial", "Failed", "Canceled"}
+        poll_count = 0
 
         while time.time() < deadline:
             headers = await self._auth_headers()
@@ -240,10 +244,14 @@ class CheckmarxScanner(SecurityScanner):
             )
             resp.raise_for_status()
             status = resp.json().get("status", "")
+            poll_count += 1
             if status in terminal:
+                logger.debug("[checkmarx] Scan %s reached terminal status '%s' after %d polls", scan_id, status, poll_count)
                 return status
+            logger.debug("[checkmarx] Scan %s status: %s (poll #%d)", scan_id, status, poll_count)
             await asyncio.sleep(POLL_INTERVAL)
 
+        logger.error("[checkmarx] TIMEOUT — scan %s did not complete within %ds (%d polls)", scan_id, SCAN_TIMEOUT, poll_count)
         return "Timeout"
 
     async def _get_results(self, scan_id: str) -> dict:
@@ -279,6 +287,10 @@ class CheckmarxScanner(SecurityScanner):
     ) -> ScanResult:
         """Scan an npm package via Checkmarx One Full Scan."""
         if not TENANT or not CLIENT_ID or not CLIENT_SECRET:
+            logger.error(
+                "[checkmarx] ERROR — credentials not configured "
+                "(CHECKMARX_TENANT, CHECKMARX_CLIENT_ID, CHECKMARX_CLIENT_SECRET)"
+            )
             return ScanResult(
                 status=ScanStatus.ERROR,
                 scanner="checkmarx",
@@ -287,23 +299,35 @@ class CheckmarxScanner(SecurityScanner):
             )
 
         try:
+            logger.info("[checkmarx] Starting scan for %s@%s", package_name, version)
+
             # Build artefacts
             pkg_json = self._build_package_json(package_name, version)
             zip_bytes = self._zip_manifest(pkg_json)
+            logger.debug("[checkmarx] Built package.json and ZIP archive (%d bytes)", len(zip_bytes))
 
             # Upload
             project_id = await self._ensure_project()
+            logger.debug("[checkmarx] Using project: %s (%s)", PROJECT_NAME, project_id)
             upload_url = await self._upload_zip(zip_bytes)
+            logger.debug("[checkmarx] ZIP uploaded to presigned URL")
 
             # Scan
             scan_id = await self._create_scan(upload_url, project_id)
             logger.info(
-                "Checkmarx scan %s started for %s@%s", scan_id, package_name, version
+                "[checkmarx] Scan %s created for %s@%s — polling for results...",
+                scan_id, package_name, version,
             )
 
             # Poll
             final_status = await self._poll_scan(scan_id)
+            logger.info("[checkmarx] Scan %s finished with status: %s", scan_id, final_status)
+
             if final_status not in ("Completed", "Partial"):
+                logger.error(
+                    "[checkmarx] ERROR — scan %s ended with non-terminal status: %s",
+                    scan_id, final_status,
+                )
                 return ScanResult(
                     status=ScanStatus.ERROR,
                     scanner="checkmarx",
@@ -321,11 +345,27 @@ class CheckmarxScanner(SecurityScanner):
             ]
             status = ScanStatus.FAILED if blocking else ScanStatus.PASSED
 
+            if status == ScanStatus.PASSED:
+                logger.info(
+                    "[checkmarx] PASSED — %s@%s — %d total vulnerabilities, 0 blocking",
+                    package_name, version, len(vulnerabilities),
+                )
+            else:
+                logger.warning(
+                    "[checkmarx] FAILED — %s@%s — %d blocking out of %d total vulnerabilities",
+                    package_name, version, len(blocking), len(vulnerabilities),
+                )
+                for v in blocking:
+                    logger.warning(
+                        "[checkmarx]   %s %s in %s@%s — %s",
+                        v.severity, v.id, v.package_name, v.package_version, v.description[:120],
+                    )
+
             summary_data = {}
             try:
                 summary_data = await self._get_results_summary(scan_id)
             except Exception:
-                pass  # summary is optional
+                logger.debug("[checkmarx] Could not fetch results summary for scan %s (optional)", scan_id)
 
             return ScanResult(
                 status=status,
@@ -342,14 +382,17 @@ class CheckmarxScanner(SecurityScanner):
             )
 
         except httpx.HTTPStatusError as exc:
-            logger.exception("Checkmarx API error for %s", package_name)
+            logger.exception(
+                "[checkmarx] ERROR — API returned %d for %s@%s: %s",
+                exc.response.status_code, package_name, version, exc.response.text[:200],
+            )
             return ScanResult(
                 status=ScanStatus.ERROR,
                 scanner="checkmarx",
                 summary=f"Checkmarx API error: {exc.response.status_code} — {exc.response.text[:200]}",
             )
         except Exception as exc:
-            logger.exception("Checkmarx scan failed for %s", package_name)
+            logger.exception("[checkmarx] ERROR — unexpected failure scanning %s@%s", package_name, version)
             return ScanResult(
                 status=ScanStatus.ERROR,
                 scanner="checkmarx",
@@ -396,4 +439,6 @@ class CheckmarxScanner(SecurityScanner):
 # Auto-register
 # ---------------------------------------------------------------------------
 
+_creds = "configured" if (TENANT and CLIENT_ID and CLIENT_SECRET) else "NOT configured"
+logger.info("[checkmarx] Initializing Checkmarx scanner (base=%s, tenant=%s, credentials=%s, threshold=%s)", BASE_URL, TENANT or "(empty)", _creds, ",".join(sorted(SEVERITY_THRESHOLD)))
 scanner.register("checkmarx", CheckmarxScanner())

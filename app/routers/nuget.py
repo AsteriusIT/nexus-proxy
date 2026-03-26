@@ -3,7 +3,7 @@
 Proxies the `NuGet v3 API <https://learn.microsoft.com/nuget/api/overview>`_
 from https://api.nuget.org.  Download links in the service index and
 registration pages are rewritten to route through this proxy.  Package
-downloads (``.nupkg``) are gated by an in-memory whitelist.
+downloads are forwarded transparently.
 
 Key endpoints
 -------------
@@ -28,7 +28,6 @@ import os
 from fastapi import APIRouter, Depends, Query, Request, Response
 from starlette.responses import StreamingResponse
 
-from .. import whitelist
 from ..auth import require_bearer_token
 from ..http_client import get_client
 
@@ -187,23 +186,18 @@ async def get_nuspec(package_id: str, version: str, package_id2: str):
 
 
 # ---------------------------------------------------------------------------
-# Flat container — nupkg download (streamed, whitelist-gated)
+# Flat container — nupkg download (streamed)
 # ---------------------------------------------------------------------------
 
 
 @router.get(
     "/v3-flatcontainer/{package_id}/{version}/{filename}",
     summary="Download a NuGet package (.nupkg)",
-    description="Stream a ``.nupkg`` file from the upstream NuGet registry. "
-    "The package must be whitelisted first. After a successful download "
-    "the whitelist entry is consumed.",
+    description="Stream a ``.nupkg`` file from the upstream NuGet registry.",
 )
 async def download_nupkg(package_id: str, version: str, filename: str):
     lower_id = package_id.lower()
     lower_ver = version.lower()
-
-    if not whitelist.is_whitelisted(REGISTRY, None, lower_id):
-        return Response(content="Forbidden", status_code=403)
 
     client = get_client(UPSTREAM_URL, name=REGISTRY)
     upstream = await client.send(
@@ -219,8 +213,6 @@ async def download_nupkg(package_id: str, version: str, filename: str):
         await upstream.aclose()
         return Response(content=body, status_code=upstream.status_code)
 
-    whitelist.remove(REGISTRY, None, lower_id)
-
     async def stream():
         try:
             async for chunk in upstream.aiter_bytes(chunk_size=64 * 1024):
@@ -234,20 +226,3 @@ async def download_nupkg(package_id: str, version: str, filename: str):
         media_type="application/octet-stream",
         headers={"content-length": upstream.headers.get("content-length", "")},
     )
-
-
-# ---------------------------------------------------------------------------
-# Whitelist management
-# ---------------------------------------------------------------------------
-
-
-@router.patch(
-    "/{package_id}",
-    summary="Whitelist a NuGet package",
-    description="Add a NuGet package to the download whitelist. The package ID "
-    "is stored in lowercase.",
-)
-async def whitelist_nuget_package(package_id: str):
-    lower_id = package_id.lower()
-    whitelist.add(REGISTRY, None, lower_id)
-    return {"whitelisted": lower_id}

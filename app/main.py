@@ -1,11 +1,10 @@
-"""Nexus-proxy — transparent whitelisting proxy for package registries.
+"""Nexus-proxy — transparent proxy for package registries.
 
 This FastAPI application sits between developer tools (npm, pip, mvn, dotnet,
-bundler) and a Nexus Repository Manager instance.  It enforces a per-package
-whitelist: only packages that have been explicitly whitelisted can be
-downloaded through the proxy.  After a successful download the whitelist entry
-is consumed (Nexus caches the artifact, so no repeated proxy downloads are
-needed).
+bundler) and a Nexus Repository Manager instance.  It proxies all registry
+requests transparently.  When a security scanner is active, npm package
+downloads are scanned on the fly and blocked if vulnerabilities exceed the
+configured severity threshold.
 
 Supported registries
 --------------------
@@ -29,16 +28,17 @@ from .routers import admin, maven, npm, nuget, pypi, rubygems
 from . import scanners as _scanners  # noqa: F401
 
 DESCRIPTION = """\
-Transparent whitelisting proxy for package registries, designed to work
-alongside **Sonatype Nexus Repository Manager**.
+Transparent proxy for package registries, designed to work alongside
+**Sonatype Nexus Repository Manager**.
 
 ## How it works
 
-1. **Whitelist** a package via the `PATCH` endpoint for the relevant registry.
-2. **Install** packages normally — your package manager talks to Nexus, which
+1. **Install** packages normally — your package manager talks to Nexus, which
    routes uncached requests through this proxy.
-3. The proxy **checks the whitelist**, streams the artifact from the upstream
-   registry, and **removes the whitelist entry** (Nexus caches it from there).
+2. The proxy **forwards** the request to the upstream registry and streams
+   the artifact back.
+3. When a **security scanner** is active, npm downloads are scanned on the fly
+   — packages with blocking vulnerabilities are rejected.
 
 ## Supported registries
 
@@ -53,10 +53,12 @@ alongside **Sonatype Nexus Repository Manager**.
 ## Security scanning
 
 When a security scanner is activated (via `PUT /admin/scanner` or the
-`SECURITY_SCANNER` env var), whitelisting an npm package triggers an SCA scan
-before the download is allowed.  Packages that fail the scan are **blocked**.
+`SECURITY_SCANNER` env var), npm tarball downloads trigger an on-the-fly SCA
+scan.  Packages that fail the scan are **blocked** (403).  Scanner errors are
+fail-open so development is not blocked by infrastructure issues.
 
 Currently supported scanners:
+- **trivy** — Trivy filesystem scan (subprocess or client/server mode).
 - **checkmarx** — Checkmarx One SCA (Full Scan approach).
 
 Use the `/admin/scanner` endpoints to view, activate, or disable scanners at
@@ -117,9 +119,9 @@ async def lifespan(_app: FastAPI):
 
 app = FastAPI(
     title="Nexus Proxy",
-    summary="Transparent whitelisting proxy for package registries",
+    summary="Transparent proxy for package registries with optional security scanning",
     description=DESCRIPTION,
-    version="2.0.0",
+    version="3.0.0",
     lifespan=lifespan,
     openapi_tags=TAG_METADATA,
     license_info={"name": "MIT"},

@@ -1,14 +1,14 @@
 """RubyGems registry proxy router.
 
 Proxies the `RubyGems.org API <https://guides.rubygems.org/rubygems-org-api/>`_
-from https://rubygems.org.  Gem downloads are gated by an in-memory whitelist.
+from https://rubygems.org.  Gem downloads are forwarded transparently.
 
 Key endpoints
 -------------
 - **Gem info** (``/rubygems/api/v1/gems/{name}.json``): JSON metadata for a gem.
 - **Versions** (``/rubygems/api/v1/versions/{name}.json``): all versions of a gem.
 - **Dependencies** (``/rubygems/api/v1/dependencies``): dependency resolution.
-- **Gem download** (``/rubygems/gems/{name}-{version}.gem``): whitelist-gated.
+- **Gem download** (``/rubygems/gems/{name}-{version}.gem``): streamed from upstream.
 
 Environment variables
 ---------------------
@@ -23,7 +23,6 @@ import re
 from fastapi import APIRouter, Depends, Query, Request, Response
 from starlette.responses import StreamingResponse
 
-from .. import whitelist
 from ..auth import require_bearer_token
 from ..http_client import get_client
 
@@ -35,24 +34,6 @@ router = APIRouter(
     tags=["rubygems"],
     dependencies=[Depends(require_bearer_token)],
 )
-
-
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
-
-
-def _extract_gem_name(filename: str) -> str:
-    """Extract the gem name from a filename like ``rails-7.1.3.gem``.
-
-    Gem filenames follow the pattern ``name-version.gem`` where version starts
-    with a digit.  Names can contain dashes (e.g. ``net-http``).
-    """
-    # Remove .gem suffix
-    stem = filename.removesuffix(".gem")
-    # Split on last dash-followed-by-digit: "net-http-0.4.1" → "net-http"
-    match = re.match(r"^(.+?)-\d", stem)
-    return match.group(1) if match else stem
 
 
 # ---------------------------------------------------------------------------
@@ -147,23 +128,16 @@ async def compact_index_versions():
 
 
 # ---------------------------------------------------------------------------
-# Gem download (streamed, whitelist-gated)
+# Gem download (streamed)
 # ---------------------------------------------------------------------------
 
 
 @router.get(
     "/gems/{filename}",
     summary="Download a gem file",
-    description="Stream a ``.gem`` file from the upstream RubyGems registry. "
-    "The gem must be whitelisted first by name. After a successful download "
-    "the whitelist entry is consumed.",
+    description="Stream a ``.gem`` file from the upstream RubyGems registry.",
 )
 async def download_gem(filename: str):
-    gem_name = _extract_gem_name(filename)
-
-    if not whitelist.is_whitelisted(REGISTRY, None, gem_name):
-        return Response(content="Forbidden", status_code=403)
-
     client = get_client(UPSTREAM_URL, name=REGISTRY)
     upstream = await client.send(
         client.build_request("GET", f"/gems/{filename}"), stream=True
@@ -173,8 +147,6 @@ async def download_gem(filename: str):
         body = await upstream.aread()
         await upstream.aclose()
         return Response(content=body, status_code=upstream.status_code)
-
-    whitelist.remove(REGISTRY, None, gem_name)
 
     async def stream():
         try:
@@ -189,18 +161,3 @@ async def download_gem(filename: str):
         media_type="application/octet-stream",
         headers={"content-length": upstream.headers.get("content-length", "")},
     )
-
-
-# ---------------------------------------------------------------------------
-# Whitelist management
-# ---------------------------------------------------------------------------
-
-
-@router.patch(
-    "/{gem_name}",
-    summary="Whitelist a RubyGem",
-    description="Add a RubyGem to the download whitelist by name.",
-)
-async def whitelist_rubygem(gem_name: str):
-    whitelist.add(REGISTRY, None, gem_name)
-    return {"whitelisted": gem_name}

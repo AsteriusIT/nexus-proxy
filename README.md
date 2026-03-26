@@ -1,120 +1,99 @@
-# Self-Proxy
+# Nexus Proxy
 
-A proxy for **Nexus** that enables **package whitelisting**. Only whitelisted packages can be downloaded; metadata is proxied transparently. Designed to sit in front of Nexus so that package managers (npm, etc.) resolve metadata through the proxy while tarball/artifact downloads are allowed only for explicitly whitelisted packages.
+A transparent proxy for **package registries**, designed to work alongside **Sonatype Nexus Repository Manager**. When a security scanner is active, npm downloads are scanned on the fly and blocked if vulnerabilities exceed the severity threshold.
 
 ## Supported package formats
 
-| Format    | Status   |
-|----------|----------|
-| **npm**  | Supported |
-| Maven    | Planned  |
-| NuGet    | Planned  |
-| R        | Planned  |
-| Python   | Planned  |
-| Container| Planned  |
+| Format       | Status    |
+|-------------|-----------|
+| **npm**     | Supported (with optional security scanning) |
+| **PyPI**    | Supported |
+| **Maven**   | Supported |
+| **NuGet**   | Supported |
+| **RubyGems**| Supported |
 
 ## How it works
 
-1. **Metadata** (e.g. npm package manifest) is proxied from the upstream registry (e.g. `registry.npmjs.org`) and returned to the client. Tarball URLs in the response are rewritten to point at the proxy.
-2. **Tarball/artifact download** is allowed only if the package is on the **whitelist**. If not whitelisted, the proxy returns `403 Forbidden`.
-3. After a whitelisted package’s tarball is streamed through the proxy, that package is removed from the whitelist so that subsequent requests go to Nexus (which has cached the artifact).
-
-Typical flow: configure Nexus to use this proxy as an upstream, whitelist the packages you need (e.g. from `package-lock.json`), then run `npm install`; the proxy serves only the whitelisted packages and Nexus caches them.
-
-## Requirements
-
-- Python 3.12+
-- [FastAPI](https://fastapi.tiangolo.com/) and [httpx](https://www.python-httpx.org/)
+1. **Metadata** (e.g. npm package manifest) is proxied from the upstream registry and returned to the client. Download URLs in the response are rewritten to route through the proxy.
+2. **Downloads** are forwarded transparently to the upstream registry.
+3. When a **security scanner** is active (Trivy or Checkmarx), npm tarball downloads are scanned before being served — packages with blocking vulnerabilities are rejected with `403`.
 
 ## Quick start
 
 ```bash
-# From the project root
+docker-compose up -d
+```
+
+This starts Nexus, the proxy, and a Trivy security scanner. The proxy is available internally on port 80; Nexus is exposed on `http://localhost:8081`.
+
+For local development:
+
+```bash
+pip install -r requirements.txt
 python -m uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
 ```
 
-The API is available at `http://localhost:8000`. OpenAPI docs: `http://localhost:8000/docs`.
+OpenAPI docs: `http://localhost:8000/docs`
 
-## Protecting the proxy API (Bearer token)
+## Authentication
 
-To require authentication so only Nexus (or other trusted callers) can use the proxy, set a Bearer token via **env** or **file**:
-
-- **Env:** set `PROXY_BEARER_TOKEN` to the secret token.
-- **File:** set `PROXY_BEARER_TOKEN_FILE` to the path of a file whose first line is the token (e.g. avoid storing the token in process list or env dumps).
-
-Env takes precedence. If neither is set, the API is open (no auth).
-
-Clients must send: `Authorization: Bearer <token>` on every request. Invalid or missing token returns `401 Unauthorized`.
-
-Example with env:
+Set `PROXY_BEARER_TOKEN` to require a Bearer token on all requests:
 
 ```bash
 export PROXY_BEARER_TOKEN=your-secret-token
-python -m uvicorn app.main:app --host 0.0.0.0 --port 8000
 ```
 
-Example with file:
+Alternatively, use `PROXY_BEARER_TOKEN_FILE` to read the token from a file. If neither is set, the API is open.
+
+## Security scanning
+
+Activate a scanner via environment variable or at runtime:
 
 ```bash
-echo -n "your-secret-token" > .proxy-bearer-token
-export PROXY_BEARER_TOKEN_FILE=.proxy-bearer-token
-python -m uvicorn app.main:app --host 0.0.0.0 --port 8000
+# Via env var
+export SECURITY_SCANNER=trivy
+
+# Or at runtime
+curl -X PUT http://localhost:8000/admin/scanner \
+  -H "Content-Type: application/json" \
+  -d '{"name": "trivy"}'
 ```
 
-Configure Nexus (or your client) to send this token when calling the proxy.
+Available scanners:
+- **trivy** — runs `trivy fs` locally or delegates to a Trivy server
+- **checkmarx** — Checkmarx One SCA (requires API credentials)
 
-## npm usage
+When active, npm tarball downloads are scanned on the fly. Scan results are cached in memory. Scanner errors are fail-open (downloads are allowed if the scanner is unavailable).
 
-### Base URL
+## Documentation
 
-All npm proxy routes are under `/npm`.
-
-### Whitelist a package
-
-Before a package’s tarball can be downloaded, it must be whitelisted via **PATCH**:
-
-- Unscoped: `PATCH /npm/{package_name}`
-- Scoped:   `PATCH /npm/@{scope}/{package_name}`
-
-Example:
-
-```bash
-# Unscoped package
-curl -X PATCH http://localhost:8000/npm/lodash
-
-# Scoped package
-curl -X PATCH http://localhost:8000/npm/@babel/core
-```
-
-### Whitelist from package-lock.json
-
-Use the script in `tests/npm/` to whitelist every package in a lockfile:
-
-```bash
-./tests/npm/whitelist-all.bash path/to/package-lock.json
-```
-
-### Point npm at Nexus (Nexus uses the proxy)
-
-Configure npm to use your Nexus repository (Nexus is configured to use this proxy as its upstream). Example `.npmrc`:
-
-```
-registry=http://localhost:8081/repository/npmjs/
-```
-
-Then run `npm install` as usual; only whitelisted packages will be downloadable through the proxy.
+- [Deployment Guide](docs/deployment.md) — Docker Compose, standalone Docker, Python, Nexus configuration, scanner setup
+- [Usage Guide](docs/usage.md) — per-registry examples, security scanning workflow, API reference
 
 ## Project layout
 
 ```
 app/
-  main.py           # FastAPI app, mounts routers
-  config.py         # Proxy config (e.g. Bearer token from env/file)
-  auth.py           # Bearer token dependency to protect the API
+  main.py              # FastAPI app, mounts routers
+  config.py            # Proxy config (Bearer token)
+  auth.py              # Bearer token dependency
+  http_client.py       # Async HTTP client factory
+  scanner.py           # Scanner abstraction + registry
+  scanners/
+    checkmarx.py       # Checkmarx One SCA scanner
+    trivy.py           # Trivy filesystem scanner
   routers/
-    npm.py          # npm registry proxy + whitelist
+    admin.py           # Scanner management endpoints
+    npm.py             # npm registry proxy + scanning
+    pypi.py            # PyPI registry proxy
+    maven.py           # Maven Central proxy
+    nuget.py           # NuGet v3 proxy
+    rubygems.py        # RubyGems proxy
+docs/
+  deployment.md        # Deployment guide
+  usage.md             # Usage guide
 tests/
-  npm/              # Scripts and config for testing npm (whitelist, .npmrc)
+  npm/                 # Test config for npm
 ```
 
 ## License

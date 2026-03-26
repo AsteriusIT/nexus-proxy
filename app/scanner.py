@@ -105,11 +105,16 @@ class SecurityScanner(ABC):
 _scanners: dict[str, SecurityScanner] = {}
 _active_name: str | None = os.environ.get("SECURITY_SCANNER", "").strip() or None
 
+if _active_name:
+    logger.info("[scanner] SECURITY_SCANNER env var set to: '%s'", _active_name)
+else:
+    logger.info("[scanner] No SECURITY_SCANNER env var — scanning disabled by default")
+
 
 def register(name: str, instance: SecurityScanner) -> None:
     """Register a scanner provider under *name* (case-insensitive)."""
     _scanners[name.lower()] = instance
-    logger.info("Registered security scanner: %s", name)
+    logger.info("[scanner] Registered scanner provider: '%s' (%s)", name, type(instance).__name__)
 
 
 def list_scanners() -> list[str]:
@@ -135,16 +140,21 @@ def set_active(name: str | None) -> None:
     if name is not None:
         lower = name.lower()
         if lower not in _scanners:
+            available = ", ".join(list_scanners()) or "(none)"
+            logger.error("[scanner] Cannot activate unknown scanner '%s' — available: %s", name, available)
             raise ValueError(
-                f"Unknown scanner '{name}'. Available: {', '.join(list_scanners())}"
+                f"Unknown scanner '{name}'. Available: {available}"
             )
         _active_name = lower
+        logger.info("[scanner] Security scanning ENABLED — active scanner: '%s'", _active_name)
     else:
         _active_name = None
-    logger.info("Active security scanner set to: %s", _active_name)
+        logger.info("[scanner] Security scanning DISABLED — no active scanner")
 
 
 async def close_all() -> None:
     """Close all registered scanners."""
-    for s in _scanners.values():
+    for name, s in _scanners.items():
+        logger.info("[scanner] Closing scanner: '%s'", name)
         await s.close()
+    logger.info("[scanner] All scanners closed")
