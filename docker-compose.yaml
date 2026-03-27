@@ -16,10 +16,41 @@ services:
     restart: unless-stopped
 
   nexus-self-proxy:
-    image: rg.fr-par.scw.cloud/asterius-public/nexus-self-proxy:v1.0.0
+    image: rg.fr-par.scw.cloud/asterius-public/nexus-self-proxy:v3.0.2
     container_name: nexus-self-proxy
     environment:
+      # Log level (DEBUG, INFO, WARNING, ERROR)
+      LOG_LEVEL: DEBUG
+
+      # Authentication (optional — omit to run without auth)
       PROXY_BEARER_TOKEN: ${PROXY_BEARER_TOKEN}
+
+      # Upstream registry overrides (all optional — defaults to public registries)
+      # NPM_UPSTREAM_REGISTRY: https://registry.npmjs.org
+      # PYPI_UPSTREAM_SIMPLE: https://pypi.org/simple
+      # PYPI_UPSTREAM_FILES: https://files.pythonhosted.org
+      # MAVEN_UPSTREAM_URL: https://repo1.maven.org/maven2
+      # NUGET_UPSTREAM_URL: https://api.nuget.org
+      # RUBYGEMS_UPSTREAM_URL: https://rubygems.org
+
+      # Security scanner (optional — pick one or leave empty to disable)
+      SECURITY_SCANNER: osv
+      # SECURITY_SCANNER: checkmarx
+
+      # OSV scanner settings
+      # OSV_API_URL: https://api.osv.dev
+      # OSV_TIMEOUT: "30"
+      OSV_SEVERITY_THRESHOLD: CRITICAL,HIGH
+
+      # Checkmarx scanner settings
+      # CHECKMARX_BASE_URL: https://eu-2.ast.checkmarx.net
+      # CHECKMARX_IAM_URL: https://eu-2.iam.checkmarx.net
+      # CHECKMARX_TENANT: ${CHECKMARX_TENANT}
+      # CHECKMARX_CLIENT_ID: ${CHECKMARX_CLIENT_ID}
+      # CHECKMARX_CLIENT_SECRET: ${CHECKMARX_CLIENT_SECRET}
+      # CHECKMARX_PROJECT_NAME: nexus-proxy-sca
+      # CHECKMARX_SCAN_TIMEOUT: "300"
+      # CHECKMARX_SEVERITY_THRESHOLD: CRITICAL,HIGH
     depends_on:
       nexus:
         condition: service_healthy
