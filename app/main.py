@@ -15,10 +15,22 @@ Supported registries
 - **RubyGems** — ``/rubygems/...`` (rubygems.org)
 """
 
+import logging
+import os
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, status
 from pydantic import BaseModel
+
+# ---------------------------------------------------------------------------
+# Logging configuration — must run before any other app import
+# ---------------------------------------------------------------------------
+LOG_LEVEL = os.environ.get("LOG_LEVEL", "INFO").upper()
+logging.basicConfig(
+    level=getattr(logging, LOG_LEVEL, logging.INFO),
+    format="%(asctime)s %(levelname)-8s %(name)s — %(message)s",
+    datefmt="%Y-%m-%dT%H:%M:%S",
+)
 
 from . import scanner as scanner_mod
 from .http_client import close_all
@@ -58,7 +70,7 @@ scan.  Packages that fail the scan are **blocked** (403).  Scanner errors are
 fail-open so development is not blocked by infrastructure issues.
 
 Currently supported scanners:
-- **trivy** — Trivy filesystem scan (subprocess or client/server mode).
+- **osv** — OSV.dev REST API (free, no infrastructure needed).
 - **checkmarx** — Checkmarx One SCA (Full Scan approach).
 
 Use the `/admin/scanner` endpoints to view, activate, or disable scanners at

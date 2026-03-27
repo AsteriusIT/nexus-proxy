@@ -190,18 +190,18 @@ Response:
 
 ```json
 {
-  "active": "trivy",
-  "available": ["checkmarx", "trivy"]
+  "active": "osv",
+  "available": ["checkmarx", "osv"]
 }
 ```
 
 ### Switch scanner at runtime
 
 ```bash
-# Enable Trivy
+# Enable OSV.dev
 pcurl -X PUT http://localhost:8000/admin/scanner \
   -H "Content-Type: application/json" \
-  -d '{"name": "trivy"}'
+  -d '{"name": "osv"}'
 
 # Enable Checkmarx
 pcurl -X PUT http://localhost:8000/admin/scanner \

@@ -16,9 +16,12 @@ services:
     restart: unless-stopped
 
   nexus-self-proxy:
-    image: rg.fr-par.scw.cloud/asterius-public/nexus-self-proxy:v2.1.0
+    image: rg.fr-par.scw.cloud/asterius-public/nexus-self-proxy:v3.0.2
     container_name: nexus-self-proxy
     environment:
+      # Log level (DEBUG, INFO, WARNING, ERROR)
+      LOG_LEVEL: DEBUG
+
       # Authentication (optional — omit to run without auth)
       PROXY_BEARER_TOKEN: ${PROXY_BEARER_TOKEN}
 
@@ -31,15 +34,13 @@ services:
       # RUBYGEMS_UPSTREAM_URL: https://rubygems.org
 
       # Security scanner (optional — pick one or leave empty to disable)
-      SECURITY_SCANNER: trivy
+      SECURITY_SCANNER: osv
       # SECURITY_SCANNER: checkmarx
 
-      # Trivy scanner settings
-      TRIVY_BINARY: trivy
-      TRIVY_SERVER_URL: http://trivy-server:4954
-      TRIVY_TIMEOUT: "300"
-      TRIVY_SEVERITY_THRESHOLD: CRITICAL,HIGH
-      # TRIVY_EXTRA_ARGS: --skip-db-update
+      # OSV scanner settings
+      # OSV_API_URL: https://api.osv.dev
+      # OSV_TIMEOUT: "30"
+      OSV_SEVERITY_THRESHOLD: CRITICAL,HIGH
 
       # Checkmarx scanner settings
       # CHECKMARX_BASE_URL: https://eu-2.ast.checkmarx.net
@@ -53,24 +54,7 @@ services:
     depends_on:
       nexus:
         condition: service_healthy
-      trivy-server:
-        condition: service_healthy
-    restart: unless-stopped
-
-  trivy-server:
-    image: aquasec/trivy:0.69.3
-    container_name: trivy-server
-    command: ["server", "--listen", "0.0.0.0:4954"]
-    volumes:
-      - trivy-cache:/root/.cache/trivy
-    healthcheck:
-      test: ["CMD", "wget", "-qO-", "http://localhost:4954/healthz"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
-      start_period: 60s
     restart: unless-stopped
 
 volumes:
   nexus-data:
-  trivy-cache:

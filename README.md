@@ -24,7 +24,7 @@ A transparent proxy for **package registries**, designed to work alongside **Son
 docker-compose up -d
 ```
 
-This starts Nexus, the proxy, and a Trivy security scanner. The proxy is available internally on port 80; Nexus is exposed on `http://localhost:8081`.
+This starts Nexus and the proxy. The proxy is available internally on port 80; Nexus is exposed on `http://localhost:8081`.
 
 For local development:
 
@@ -51,16 +51,16 @@ Activate a scanner via environment variable or at runtime:
 
 ```bash
 # Via env var
-export SECURITY_SCANNER=trivy
+export SECURITY_SCANNER=osv
 
 # Or at runtime
 curl -X PUT http://localhost:8000/admin/scanner \
   -H "Content-Type: application/json" \
-  -d '{"name": "trivy"}'
+  -d '{"name": "osv"}'
 ```
 
 Available scanners:
-- **trivy** — runs `trivy fs` locally or delegates to a Trivy server
+- **osv** — queries [OSV.dev](https://osv.dev) REST API (free, no setup needed)
 - **checkmarx** — Checkmarx One SCA (requires API credentials)
 
 When active, npm tarball downloads are scanned on the fly. Scan results are cached in memory. Scanner errors are fail-open (downloads are allowed if the scanner is unavailable).
@@ -81,7 +81,7 @@ app/
   scanner.py           # Scanner abstraction + registry
   scanners/
     checkmarx.py       # Checkmarx One SCA scanner
-    trivy.py           # Trivy filesystem scanner
+    osv.py             # OSV.dev REST API scanner
   routers/
     admin.py           # Scanner management endpoints
     npm.py             # npm registry proxy + scanning

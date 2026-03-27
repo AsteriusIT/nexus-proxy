@@ -23,7 +23,7 @@ Nexus-proxy is a FastAPI-based transparent proxy for package registries. All req
 python -m uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
 ```
 
-### Run with Docker Compose (includes Nexus + Trivy)
+### Run with Docker Compose (includes Nexus)
 ```bash
 docker-compose up -d
 ```
@@ -70,8 +70,8 @@ cd tests/npm && npm install
 **Security scanning** (under `app/`):
 
 - `scanner.py` — abstract scanner interface (`SecurityScanner`), `ScanResult`/`ScanStatus` models, and a provider registry. Admins can hot-swap the active scanner via `PUT /admin/scanner` or set the `SECURITY_SCANNER` env var.
+- `scanners/osv.py` — OSV.dev implementation. Queries the OSV.dev REST API (`POST /v1/query`) with package name + version. No binary, no temp files — just an HTTP call. Free, unauthenticated, aggregates from 24 vulnerability sources (GitHub Advisory DB, NVD, etc.). Fail-open on API errors.
 - `scanners/checkmarx.py` — Checkmarx One SCA implementation. Creates a minimal `package.json` for the requested package, ZIPs it, uploads via presigned URL, triggers an SCA-only scan, polls for completion, and returns vulnerabilities. Fail-open on scanner errors.
-- `scanners/trivy.py` — Trivy implementation. Runs `trivy fs` as a subprocess against a temp directory containing a `package.json`. Supports optional client/server mode via `TRIVY_SERVER_URL`. Fail-open on scanner errors.
 
 ### Environment variables
 
@@ -85,7 +85,10 @@ cd tests/npm && npm install
 | `MAVEN_UPSTREAM_URL`      | `https://repo1.maven.org/maven2`    | Maven Central URL                  |
 | `NUGET_UPSTREAM_URL`      | `https://api.nuget.org`             | NuGet v3 API URL                   |
 | `RUBYGEMS_UPSTREAM_URL`   | `https://rubygems.org`              | RubyGems URL                       |
-| `SECURITY_SCANNER`        | *(none)*                             | Active scanner name (e.g. `checkmarx`, `trivy`) |
+| `SECURITY_SCANNER`        | *(none)*                             | Active scanner name (e.g. `osv`, `checkmarx`) |
+| `OSV_API_URL`             | `https://api.osv.dev`               | OSV.dev API base URL               |
+| `OSV_TIMEOUT`             | `30`                                 | HTTP request timeout in seconds    |
+| `OSV_SEVERITY_THRESHOLD`  | `CRITICAL,HIGH`                      | Severities that block download     |
 | `CHECKMARX_BASE_URL`      | `https://eu-2.ast.checkmarx.net`    | Checkmarx One API base URL         |
 | `CHECKMARX_IAM_URL`       | `https://eu-2.iam.checkmarx.net`    | Checkmarx IAM base URL             |
 | `CHECKMARX_TENANT`        | *(required if scanner active)*       | Tenant / realm name                |
@@ -94,11 +97,6 @@ cd tests/npm && npm install
 | `CHECKMARX_PROJECT_NAME`  | `nexus-proxy-sca`                    | Checkmarx project name             |
 | `CHECKMARX_SCAN_TIMEOUT`  | `300`                                | Max seconds to wait for scan       |
 | `CHECKMARX_SEVERITY_THRESHOLD` | `CRITICAL,HIGH`               | Severities that block download     |
-| `TRIVY_BINARY`            | `trivy`                              | Path to the Trivy binary           |
-| `TRIVY_SERVER_URL`        | *(none)*                             | Trivy server URL (client/server mode) |
-| `TRIVY_TIMEOUT`           | `300`                                | Max seconds to wait for scan       |
-| `TRIVY_SEVERITY_THRESHOLD`| `CRITICAL,HIGH`                      | Severities that block download     |
-| `TRIVY_EXTRA_ARGS`        | *(none)*                             | Extra CLI args for Trivy           |
 
 ## CI Pipeline
 
