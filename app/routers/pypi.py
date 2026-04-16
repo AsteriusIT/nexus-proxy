@@ -21,14 +21,19 @@ PYPI_UPSTREAM_FILES : str
     (default: ``https://files.pythonhosted.org``).
 """
 
+import logging
 import os
 import re
 
 from fastapi import APIRouter, Depends, Request, Response
-from starlette.responses import StreamingResponse
+from starlette.responses import JSONResponse, StreamingResponse
 
+from .. import scanner
 from ..auth import require_bearer_token
 from ..http_client import get_client
+from ..scanner import ScanResult, ScanStatus
+
+logger = logging.getLogger(__name__)
 
 REGISTRY = "pypi"
 UPSTREAM_SIMPLE = os.environ.get("PYPI_UPSTREAM_SIMPLE", "https://pypi.org/simple").rstrip("/")
@@ -45,9 +50,39 @@ router = APIRouter(
 # Helpers
 # ---------------------------------------------------------------------------
 
+# In-memory cache of scan results, keyed by "package@version"
+_scan_cache: dict[str, ScanResult] = {}
+
+
 def _normalize_name(name: str) -> str:
     """PEP 503 normalization: lowercase, runs of [-_.] → single dash."""
     return re.sub(r"[-_.]+", "-", name).lower()
+
+
+def _extract_pypi_name_version(filename: str) -> tuple[str, str]:
+    """Extract package name and version from a PyPI filename.
+
+    Handles sdists (``name-1.0.0.tar.gz``) and wheels
+    (``name-1.0.0-cp39-cp39-linux.whl``).
+    """
+    # Strip common archive extensions
+    base = filename
+    for ext in (".tar.gz", ".tar.bz2", ".zip", ".whl", ".egg"):
+        if base.endswith(ext):
+            base = base[: -len(ext)]
+            break
+
+    # Wheels: name-version-pythontag-abitag-platformtag
+    # Sdists: name-version
+    # Split on '-' and find the version boundary (first segment starting with digit)
+    parts = base.split("-")
+    for i, part in enumerate(parts):
+        if i > 0 and part and part[0].isdigit():
+            name = "-".join(parts[:i])
+            version = parts[i]
+            return _normalize_name(name), version
+
+    return _normalize_name(base), "unknown"
 
 
 def _rewrite_file_urls(html: str, proxy_base_url: str) -> str:
@@ -166,9 +201,41 @@ async def json_version_metadata(package_name: str, version: str, request: Reques
 @router.get(
     "/files/{file_path:path}",
     summary="Download a package file",
-    description="Stream a package file (wheel, sdist, etc.) from upstream PyPI.",
+    description="Stream a package file (wheel, sdist, etc.) from upstream PyPI. "
+    "If a security scanner is active, the package is scanned on the fly.",
 )
 async def download_file(file_path: str):
+    filename = file_path.rsplit("/", 1)[-1]
+    package_name, version = _extract_pypi_name_version(filename)
+    logger.info("[pypi] Download requested: %s@%s (%s)", package_name, version, filename)
+
+    # Scan if a scanner is active
+    active_scanner = scanner.get_active()
+    if active_scanner is not None:
+        key = f"{package_name}@{version}"
+        result = _scan_cache.get(key)
+
+        if result is not None:
+            logger.info("[pypi] [SCAN] Cache hit for %s — status=%s", key, result.status.value)
+        else:
+            logger.info("[pypi] [SCAN] Scanning %s with '%s'...", key, scanner.get_active_name())
+            result = await active_scanner.scan_package(package_name, version, "pypi")
+            _scan_cache[key] = result
+
+        if result.status == ScanStatus.FAILED:
+            logger.warning("[pypi] [BLOCKED] Download of %s blocked — %s", key, result.summary)
+            return JSONResponse(
+                content={
+                    "error": "Security scan failed — download blocked",
+                    "detail": result.summary,
+                    "vulnerabilities": [v.model_dump() for v in result.vulnerabilities],
+                },
+                status_code=403,
+            )
+
+        if result.status == ScanStatus.ERROR:
+            logger.warning("[pypi] [SCAN] Scanner error for %s — allowing download (fail-open): %s", key, result.summary)
+
     client = get_client(UPSTREAM_FILES, name=f"{REGISTRY}-files")
     upstream = await client.send(
         client.build_request("GET", f"/{file_path}"), stream=True

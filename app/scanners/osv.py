@@ -129,6 +129,15 @@ def _extract_severity(vuln: dict) -> str:
 # ---------------------------------------------------------------------------
 
 
+_OSV_ECOSYSTEM_MAP: dict[str, str] = {
+    "npm": "npm",
+    "pypi": "PyPI",
+    "maven": "Maven",
+    "nuget": "NuGet",
+    "rubygems": "RubyGems",
+}
+
+
 class OsvScanner(SecurityScanner):
     """OSV.dev vulnerability scanner using the public REST API."""
 
@@ -144,12 +153,13 @@ class OsvScanner(SecurityScanner):
         if self._client and not self._client.is_closed:
             await self._client.aclose()
 
-    async def scan_npm_package(
+    async def scan_package(
         self,
         package_name: str,
-        version: str = "latest",
+        version: str,
+        ecosystem: str,
     ) -> ScanResult:
-        """Query OSV.dev for vulnerabilities in an npm package."""
+        """Query OSV.dev for vulnerabilities in a package."""
         if version in ("latest", "*", "unknown"):
             logger.warning(
                 "[osv] Cannot scan %s — version is '%s', need an exact version",
@@ -161,6 +171,8 @@ class OsvScanner(SecurityScanner):
                 summary=f"Cannot scan without an exact version (got '{version}')",
             )
 
+        osv_ecosystem = _OSV_ECOSYSTEM_MAP.get(ecosystem, ecosystem)
+
         import time as _time
 
         try:
@@ -168,7 +180,7 @@ class OsvScanner(SecurityScanner):
             payload = {
                 "package": {
                     "name": package_name,
-                    "ecosystem": "npm",
+                    "ecosystem": osv_ecosystem,
                 },
                 "version": version,
             }

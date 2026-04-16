@@ -152,7 +152,7 @@ async def _proxy_tarball(scope: str | None, package_name: str, tarball_filename:
                 "[npm] [SCAN] Scanning %s@%s with scanner '%s' before download...",
                 full_name, version, scanner_name,
             )
-            result = await active_scanner.scan_npm_package(full_name, version)
+            result = await active_scanner.scan_package(full_name, version, "npm")
             _scan_cache[key] = result
 
             if result.status == ScanStatus.PASSED:

@@ -17,14 +17,19 @@ RUBYGEMS_UPSTREAM_URL : str
     (default: ``https://rubygems.org``).
 """
 
+import logging
 import os
 import re
 
 from fastapi import APIRouter, Depends, Query, Request, Response
-from starlette.responses import StreamingResponse
+from starlette.responses import JSONResponse, StreamingResponse
 
+from .. import scanner
 from ..auth import require_bearer_token
 from ..http_client import get_client
+from ..scanner import ScanResult, ScanStatus
+
+logger = logging.getLogger(__name__)
 
 REGISTRY = "rubygems"
 UPSTREAM_URL = os.environ.get("RUBYGEMS_UPSTREAM_URL", "https://rubygems.org").rstrip("/")
@@ -34,6 +39,20 @@ router = APIRouter(
     tags=["rubygems"],
     dependencies=[Depends(require_bearer_token)],
 )
+
+# In-memory cache of scan results, keyed by "gem@version"
+_scan_cache: dict[str, ScanResult] = {}
+
+# Gem filename pattern: name-version.gem (version starts with a digit)
+_GEM_RE = re.compile(r"^(.+?)-(\d[^-]*?)\.gem$")
+
+
+def _extract_gem_name_version(filename: str) -> tuple[str, str]:
+    """Extract gem name and version from ``name-version.gem``."""
+    m = _GEM_RE.match(filename)
+    if m:
+        return m.group(1), m.group(2)
+    return filename.removesuffix(".gem"), "unknown"
 
 
 # ---------------------------------------------------------------------------
@@ -135,9 +154,40 @@ async def compact_index_versions():
 @router.get(
     "/gems/{filename}",
     summary="Download a gem file",
-    description="Stream a ``.gem`` file from the upstream RubyGems registry.",
+    description="Stream a ``.gem`` file from the upstream RubyGems registry. "
+    "If a security scanner is active, the gem is scanned on the fly.",
 )
 async def download_gem(filename: str):
+    gem_name, version = _extract_gem_name_version(filename)
+    logger.info("[rubygems] Download requested: %s@%s (%s)", gem_name, version, filename)
+
+    # Scan if a scanner is active
+    active_scanner = scanner.get_active()
+    if active_scanner is not None:
+        key = f"{gem_name}@{version}"
+        result = _scan_cache.get(key)
+
+        if result is not None:
+            logger.info("[rubygems] [SCAN] Cache hit for %s — status=%s", key, result.status.value)
+        else:
+            logger.info("[rubygems] [SCAN] Scanning %s with '%s'...", key, scanner.get_active_name())
+            result = await active_scanner.scan_package(gem_name, version, "rubygems")
+            _scan_cache[key] = result
+
+        if result.status == ScanStatus.FAILED:
+            logger.warning("[rubygems] [BLOCKED] Download of %s blocked — %s", key, result.summary)
+            return JSONResponse(
+                content={
+                    "error": "Security scan failed — download blocked",
+                    "detail": result.summary,
+                    "vulnerabilities": [v.model_dump() for v in result.vulnerabilities],
+                },
+                status_code=403,
+            )
+
+        if result.status == ScanStatus.ERROR:
+            logger.warning("[rubygems] [SCAN] Scanner error for %s — allowing download (fail-open): %s", key, result.summary)
+
     client = get_client(UPSTREAM_URL, name=REGISTRY)
     upstream = await client.send(
         client.build_request("GET", f"/gems/{filename}"), stream=True

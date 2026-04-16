@@ -63,7 +63,7 @@ async def get_scanner():
     "/scanner",
     summary="Set the active security scanner",
     description="Change the active security scanner at runtime.  Pass "
-    "``{\"scanner\": \"checkmarx\"}`` to activate, or "
+    "``{\"scanner\": \"checkmarx\"}`` (MPAPI) to activate, or "
     "``{\"scanner\": null}`` to disable scanning entirely.",
     response_model=ScannerInfo,
 )

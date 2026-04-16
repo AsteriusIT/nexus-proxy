@@ -82,16 +82,22 @@ class SecurityScanner(ABC):
     """Interface that every scanner provider must implement."""
 
     @abstractmethod
-    async def scan_npm_package(
+    async def scan_package(
         self,
         package_name: str,
-        version: str = "latest",
+        version: str,
+        ecosystem: str,
     ) -> ScanResult:
-        """Scan an npm package and return the result.
+        """Scan a package and return the result.
 
-        Implementations should create a minimal ``package.json``, send it to
-        the scanning service, wait for the result, and translate it into a
-        :class:`ScanResult`.
+        Parameters
+        ----------
+        package_name : str
+            Full package name (e.g. ``express``, ``@scope/pkg``, ``requests``).
+        version : str
+            Exact version string.
+        ecosystem : str
+            One of ``npm``, ``pypi``, ``maven``, ``nuget``, ``rubygems``.
         """
 
     async def close(self) -> None:

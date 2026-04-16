@@ -23,13 +23,18 @@ NUGET_UPSTREAM_URL : str
 """
 
 import json
+import logging
 import os
 
 from fastapi import APIRouter, Depends, Query, Request, Response
-from starlette.responses import StreamingResponse
+from starlette.responses import JSONResponse, StreamingResponse
 
+from .. import scanner
 from ..auth import require_bearer_token
 from ..http_client import get_client
+from ..scanner import ScanResult, ScanStatus
+
+logger = logging.getLogger(__name__)
 
 REGISTRY = "nuget"
 UPSTREAM_URL = os.environ.get("NUGET_UPSTREAM_URL", "https://api.nuget.org").rstrip("/")
@@ -44,6 +49,10 @@ router = APIRouter(
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
+# In-memory cache of scan results, keyed by "package@version"
+_scan_cache: dict[str, ScanResult] = {}
+
 
 def _rewrite_urls(text: str, proxy_base: str) -> str:
     """Replace upstream NuGet URLs with proxy equivalents."""
@@ -193,11 +202,40 @@ async def get_nuspec(package_id: str, version: str, package_id2: str):
 @router.get(
     "/v3-flatcontainer/{package_id}/{version}/{filename}",
     summary="Download a NuGet package (.nupkg)",
-    description="Stream a ``.nupkg`` file from the upstream NuGet registry.",
+    description="Stream a ``.nupkg`` file from the upstream NuGet registry. "
+    "If a security scanner is active, the package is scanned on the fly.",
 )
 async def download_nupkg(package_id: str, version: str, filename: str):
     lower_id = package_id.lower()
     lower_ver = version.lower()
+    logger.info("[nuget] Download requested: %s@%s (%s)", lower_id, lower_ver, filename)
+
+    # Scan if a scanner is active
+    active_scanner = scanner.get_active()
+    if active_scanner is not None:
+        key = f"{lower_id}@{lower_ver}"
+        result = _scan_cache.get(key)
+
+        if result is not None:
+            logger.info("[nuget] [SCAN] Cache hit for %s — status=%s", key, result.status.value)
+        else:
+            logger.info("[nuget] [SCAN] Scanning %s with '%s'...", key, scanner.get_active_name())
+            result = await active_scanner.scan_package(lower_id, lower_ver, "nuget")
+            _scan_cache[key] = result
+
+        if result.status == ScanStatus.FAILED:
+            logger.warning("[nuget] [BLOCKED] Download of %s blocked — %s", key, result.summary)
+            return JSONResponse(
+                content={
+                    "error": "Security scan failed — download blocked",
+                    "detail": result.summary,
+                    "vulnerabilities": [v.model_dump() for v in result.vulnerabilities],
+                },
+                status_code=403,
+            )
+
+        if result.status == ScanStatus.ERROR:
+            logger.warning("[nuget] [SCAN] Scanner error for %s — allowing download (fail-open): %s", key, result.summary)
 
     client = get_client(UPSTREAM_URL, name=REGISTRY)
     upstream = await client.send(

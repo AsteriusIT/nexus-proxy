@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-Nexus-proxy is a FastAPI-based transparent proxy for package registries. All requests are forwarded to upstream registries with download URLs rewritten to route through the proxy. When a security scanner is active, npm tarball downloads are scanned on the fly and blocked if vulnerabilities exceed the severity threshold. Scanner errors are fail-open (development is not blocked by infrastructure issues).
+Nexus-proxy is a FastAPI-based transparent proxy for package registries. All requests are forwarded to upstream registries with download URLs rewritten to route through the proxy. When a security scanner is active, package downloads across all registries (npm, PyPI, Maven, NuGet, RubyGems) are scanned on the fly and blocked if vulnerabilities exceed the severity threshold. Scanner errors are fail-open (development is not blocked by infrastructure issues).
 
 ### Supported registries
 
@@ -59,19 +59,19 @@ cd tests/npm && npm install
 
 - `npm.py` — npm registry. Metadata endpoints fetch from upstream and rewrite tarball URLs. Tarball downloads are streamed in 64KB chunks. When a scanner is active, downloads are scanned on the fly (results cached by package@version). Supports scoped (`@scope/name`) and unscoped packages.
 
-- `pypi.py` — PyPI registry. Supports Simple API (PEP 503), JSON metadata API, and file downloads from `files.pythonhosted.org`. Package names are PEP 503-normalized. Downloads forwarded transparently.
+- `pypi.py` — PyPI registry. Supports Simple API (PEP 503), JSON metadata API, and file downloads from `files.pythonhosted.org`. Package names are PEP 503-normalized. When a scanner is active, file downloads are scanned on the fly (name/version extracted from filename).
 
-- `maven.py` — Maven Central. Path-based layout (`groupId/artifactId/version/file`). Metadata and artifact downloads separated into `/metadata/` and `/artifact/` prefixed paths. Downloads forwarded transparently.
+- `maven.py` — Maven Central. Path-based layout (`groupId/artifactId/version/file`). Metadata and artifact downloads separated into `/metadata/` and `/artifact/` prefixed paths. When a scanner is active, artifact downloads are scanned on the fly (coordinates extracted from path).
 
-- `nuget.py` — NuGet v3 API. Proxies service index, search, registration, and flat container endpoints. URLs in responses are rewritten. Downloads forwarded transparently.
+- `nuget.py` — NuGet v3 API. Proxies service index, search, registration, and flat container endpoints. URLs in responses are rewritten. When a scanner is active, `.nupkg` downloads are scanned on the fly.
 
-- `rubygems.py` — RubyGems.org. Supports JSON API, compact index, dependency resolution, and `.gem` file downloads.
+- `rubygems.py` — RubyGems.org. Supports JSON API, compact index, dependency resolution, and `.gem` file downloads. When a scanner is active, gem downloads are scanned on the fly (name/version extracted from filename).
 
 **Security scanning** (under `app/`):
 
 - `scanner.py` — abstract scanner interface (`SecurityScanner`), `ScanResult`/`ScanStatus` models, and a provider registry. Admins can hot-swap the active scanner via `PUT /admin/scanner` or set the `SECURITY_SCANNER` env var.
 - `scanners/osv.py` — OSV.dev implementation. Queries the OSV.dev REST API (`POST /v1/query`) with package name + version. No binary, no temp files — just an HTTP call. Free, unauthenticated, aggregates from 24 vulnerability sources (GitHub Advisory DB, NVD, etc.). Fail-open on API errors.
-- `scanners/checkmarx.py` — Checkmarx One SCA implementation. Creates a minimal `package.json` for the requested package, ZIPs it, uploads via presigned URL, triggers an SCA-only scan, polls for completion, and returns vulnerabilities. Fail-open on scanner errors.
+- `scanners/checkmarx.py` — Checkmarx MPAPI implementation. Queries the Checkmarx Malicious Package Identification API (`POST /v1/packages`) with package name, type, and version. No OAuth, no project management — just a single HTTP call. Returns supply-chain risks (malicious packages, data leakage, star-jacking, etc.). Fail-open on API errors.
 
 ### Environment variables
 
@@ -89,13 +89,9 @@ cd tests/npm && npm install
 | `OSV_API_URL`             | `https://api.osv.dev`               | OSV.dev API base URL               |
 | `OSV_TIMEOUT`             | `30`                                 | HTTP request timeout in seconds    |
 | `OSV_SEVERITY_THRESHOLD`  | `CRITICAL,HIGH`                      | Severities that block download     |
-| `CHECKMARX_BASE_URL`      | `https://eu-2.ast.checkmarx.net`    | Checkmarx One API base URL         |
-| `CHECKMARX_IAM_URL`       | `https://eu-2.iam.checkmarx.net`    | Checkmarx IAM base URL             |
-| `CHECKMARX_TENANT`        | *(required if scanner active)*       | Tenant / realm name                |
-| `CHECKMARX_CLIENT_ID`     | *(required if scanner active)*       | OAuth2 client ID                   |
-| `CHECKMARX_CLIENT_SECRET` | *(required if scanner active)*       | OAuth2 client secret               |
-| `CHECKMARX_PROJECT_NAME`  | `nexus-proxy-sca`                    | Checkmarx project name             |
-| `CHECKMARX_SCAN_TIMEOUT`  | `300`                                | Max seconds to wait for scan       |
+| `CHECKMARX_MPAPI_URL`     | `https://api.dusti.co/v1/packages`  | Checkmarx MPAPI endpoint URL       |
+| `CHECKMARX_MPAPI_TOKEN`   | *(required if scanner active)*       | MPAPI token from Checkmarx         |
+| `CHECKMARX_MPAPI_TIMEOUT` | `30`                                 | HTTP request timeout in seconds    |
 | `CHECKMARX_SEVERITY_THRESHOLD` | `CRITICAL,HIGH`               | Severities that block download     |
 
 ## CI Pipeline
