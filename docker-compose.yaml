@@ -16,7 +16,7 @@ services:
     restart: unless-stopped
 
   nexus-self-proxy:
-    image: rg.fr-par.scw.cloud/asterius-public/nexus-self-proxy:v3.0.2
+    image: rg.fr-par.scw.cloud/asterius-public/nexus-self-proxy:v3.1.0
     container_name: nexus-self-proxy
     environment:
       # Log level (DEBUG, INFO, WARNING, ERROR)
@@ -34,7 +34,7 @@ services:
       # RUBYGEMS_UPSTREAM_URL: https://rubygems.org
 
       # Security scanner (optional — pick one or leave empty to disable)
-      SECURITY_SCANNER: osv
+      SECURITY_SCANNER: checkmarx
       # SECURITY_SCANNER: checkmarx
 
       # OSV scanner settings
@@ -43,18 +43,20 @@ services:
       OSV_SEVERITY_THRESHOLD: CRITICAL,HIGH
 
       # Checkmarx scanner settings
-      # CHECKMARX_BASE_URL: https://eu-2.ast.checkmarx.net
-      # CHECKMARX_IAM_URL: https://eu-2.iam.checkmarx.net
-      # CHECKMARX_TENANT: ${CHECKMARX_TENANT}
-      # CHECKMARX_CLIENT_ID: ${CHECKMARX_CLIENT_ID}
-      # CHECKMARX_CLIENT_SECRET: ${CHECKMARX_CLIENT_SECRET}
-      # CHECKMARX_PROJECT_NAME: nexus-proxy-sca
-      # CHECKMARX_SCAN_TIMEOUT: "300"
+      CHECKMARX_MPAPI_URL: http://mpapi-mock:3000/v1/packages
+      CHECKMARX_MPAPI_TOKEN: test
+      # CHECKMARX_MPAPI_TIMEOUT: 30
       # CHECKMARX_SEVERITY_THRESHOLD: CRITICAL,HIGH
     depends_on:
       nexus:
         condition: service_healthy
     restart: unless-stopped
 
+  mpapi-mock:
+    image: mpapi-mock:v1.0.0
+    container_name: mpapi-mock
+    restart: unless-stopped
+    environment:
+      API_TOKEN: test
 volumes:
   nexus-data:
